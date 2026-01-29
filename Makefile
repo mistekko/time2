@@ -9,7 +9,7 @@ comprof: comprof.lisp
 						  :toplevel #'main\
 						  :executable t)"
 
-install:
+install: comprof
 	mkdir -p ${PREFIX}/bin
 	cp -f comprof ${PREFIX}/bin
 
