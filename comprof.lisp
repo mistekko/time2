@@ -108,10 +108,49 @@ option::= (option-class flag initial-value).
 (defun command-run-time (command &key (output :interactive))
   "Run program given in `command' as a list of a command name followed by
 arguments and return the time it takes to complete execution."
-  (- (- (get-internal-run-time)
-	(progn (uiop:run-program command :output output
-					 :force-shell nil)
-	       (get-internal-run-time)))))
+  (- (- (get-internal-real-time)
+	(progn (restart-case (uiop:run-program command :output output
+						       :force-shell nil)
+		 (use-time-anyways () nil))
+	       (get-internal-real-time)))))
+
+(defun comprof ()
+  "Run the command the number of times specified by the values
+associated with keys `\"-s\"' and `\"-t\"' in the variable `*options*'
+and print the average duration of such a run in microseconds."
+  (let ((sets  (get-option-value "-s"))
+	(times (get-option-value "-t"))
+	(ignore-errors (get-option-value "-e")))
+    (loop for set from 0 below sets
+	  for duration
+	    = (loop for time from 0 below times
+		    summing (handler-bind
+				((uiop:subprocess-error
+				   (lambda (c)
+				     (declare (ignore c))
+				     (if ignore-errors
+					 (invoke-restart 'use-time-anyways)
+					 (print-err-and-exit
+					  "~a failed on iteration ~d in set ~d"
+					  (car sb-ext:*posix-argv*)
+					  time
+					  set)))))
+			      (command-run-time sb-ext:*posix-argv*
+						:output nil)))
+	  ;;;;; the following `do'-forms should somehow be turned into
+	  ;;;;; accumulating `loop'-clauses
+	  do (push (/ duration times)
+		   *set-averages*)
+	     (incf *overall-average* duration)
+	  finally (setq *overall-average* (/ *overall-average*
+					     (* times sets))))
+    (format t "Average execution time: ~fms~%"
+	    (/ *overall-average* internal-time-units-per-second
+	       1000)) ;; from seconds to milliseconds
+    (format t "Total execution time:   ~fs~%"
+	    (/ (* *overall-average*
+		  (* times sets))
+	       internal-time-units-per-second))))
 
 (defun main ()
   (setq *options* (make-options (integer-option "-s" 10)
@@ -127,24 +166,6 @@ arguments and return the time it takes to complete execution."
     (print-err-and-exit "Empty string passed as command"))
   (when (get-option-value "-h")
     (print-err-and-exit nil))
-  (let ((sets  (get-option-value "-s"))
-	(times (get-option-value "-t"))
-	(ignore-errors (get-option-value "-e")))
-    (loop for set from 0 below sets
-	  for duration
-	    = (loop for time from 0 below times
-		    summing (handler-case (command-run-time sb-ext:*posix-argv*
-							    :output nil)
-			      (uiop:subprocess-error ()
-				(unless ignore-errors
-				  (print-err-and-exit
-				   "~a failed on iteration ~d in set ~d"
-				   (car sb-ext:*posix-argv*) time set)))))
-	  ;;;; the following `do'-forms should somehow be turned into
-	  ;;;; accumulating `loop'-clauses
-	  do (push (/ duration times)
-		   *set-averages*)
-	     (incf *overall-average* duration)
-	  finally (setq *overall-average* (/ *overall-average*
-					     (* times sets))))
-    (format t "Average execution time: ~fμs~%" *overall-average*)))
+  (handler-case (comprof)
+    (sb-sys:interactive-interrupt () 1)
+    (end-of-file () 1)))
