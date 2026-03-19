@@ -1,22 +1,22 @@
 PREFIX=${HOME}/.local
 
-all: comprof
+all: time2
 
-comprof: comprof.lisp
+time2: time2.lisp
 	sbcl --disable-ldb \
 	     --non-interactive \
-	     --load comprof.lisp\
-	     --eval "(sb-ext:save-lisp-and-die \"comprof\"\
-		       :toplevel #'comprof:main\
+	     --load time2.lisp\
+	     --eval "(sb-ext:save-lisp-and-die \"time2\"\
+		       :toplevel #'time2:main\
 		       :executable t\
 	               :save-runtime-options t)" \
 
-install: comprof
+install: time2
 	mkdir -p ${PREFIX}/bin
-	cp -f comprof ${PREFIX}/bin
+	cp -f time2 ${PREFIX}/bin
 
 clean:
-	rm comprof
+	rm time2
 
 force: clean
-	make comprof
+	make time2
