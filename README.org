@@ -1,7 +1,7 @@
 * time2
 
 ** Rationale
-A simple command timing tool. I like my judgements to have objective substance to them, and one judgement I often find myself interested in making is how efficient a command is. The standard POSIX utility =time= is not very good for this since it only runs its given command once, immediately demanding extra work just to uphold one of the most fundamental and ubiquitus inconsistencies: run-to-run variance. time2 will run your commands any number of times! Brilliant, right?
+A simple command timing tool. I like my judgements to have objective substance to them, and one judgement I often find myself interested in making is how efficient a command is. The standard POSIX utility =time= is not very good for this since it only runs its given command once, immediately demanding extra work just to mitigate one of the most fundamentally unacceptable inconsistencies in science: run-to-run variance. time2 will, right out of the box, run your commands any number of times. Brilliant, right?
 
 ** Options
 - =-t=: how many times to run the command before reporting the average performance
