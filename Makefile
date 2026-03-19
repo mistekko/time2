@@ -1,13 +1,15 @@
 PREFIX=${HOME}/.local
-LISP=sbcl
 
 all: comprof
 
 comprof: comprof.lisp
-	${LISP} --load comprof.lisp\
-		--eval "(sb-ext:save-lisp-and-die \"comprof\"\
-						  :toplevel #'main\
-						  :executable t)"
+	sbcl --disable-ldb \
+	     --non-interactive \
+	     --load comprof.lisp\
+	     --eval "(sb-ext:save-lisp-and-die \"comprof\"\
+		       :toplevel #'main\
+		       :executable t\
+	               :save-runtime-options t)" \
 
 install: comprof
 	mkdir -p ${PREFIX}/bin
@@ -15,3 +17,6 @@ install: comprof
 
 clean:
 	rm comprof
+
+force: clean
+	make comprof
