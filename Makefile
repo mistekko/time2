@@ -7,7 +7,7 @@ comprof: comprof.lisp
 	     --non-interactive \
 	     --load comprof.lisp\
 	     --eval "(sb-ext:save-lisp-and-die \"comprof\"\
-		       :toplevel #'main\
+		       :toplevel #'comprof:main\
 		       :executable t\
 	               :save-runtime-options t)" \
 

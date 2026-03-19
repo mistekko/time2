@@ -1,171 +1,142 @@
-;; todo:
-;; T clean up object model
-;; F find some way to restrict integer arguments to being positive
-;; A better result reporting
-;; F handle CLI interrupts
-;; F remove `sets' functionality as it's utterly useless
-;; A -h help option
-;; change *options* from a global dynamic variable to a class-allocated slot of option
-;; support pipes
-;; (case 0
-;;   (0 nil) ;; use command-line arguments
-;;   (1 (setq sb-ext:*posix-argv* '("profile-command" "-s" "9" "-t" "99" "ls"))) ;; no issue
-;;   (2 (setq sb-ext:*posix-argv* '("profile-command" "-s" "-t" "99" "ls"))) ;; missing arg for option
-;;   (3 (setq sb-ext:*posix-argv* '("profile-command" "-q" "-t" "99" "ls"))) ;; nonexistent flag
-;;   (4 (setq sb-ext:*posix-argv* '("profile-command" "-s" "" "-t" "99" "ls"))) ;; empty argument for flag
-;;   (5 (setq sb-ext:*posix-argv* '("profile-command" "-s" "10" "" "-t" "99" "ls"))) ;; random empty argument
-;;   (6 (setq sb-ext:*posix-argv* '("profile-command" "-s" "beryllium" "ls"))) ;; nonsense argument
-;;   (7 (setq sb-ext:*posix-argv* '("profile-command" "-s" "-10" "ls")))) ;; bad argument--currentnly unhandled
+;; I'm not sure why this is ``necessary'' but many programs do it
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (ql:quickload '(:with-user-abort :adopt) :silent t))
 
-(require 'asdf)
+(defpackage :comprof
+  (:use :cl)
+  (:export :main
+	   :comprof))
 
-(defvar *usage* (format nil "Usage: ~A [-eh] [-s sets] [-t times] command arg* ~%"
-			(nth 0 sb-ext:*posix-argv*))
-  "Command help message")
-(defvar *options* nil "Alist of flags and their corresponding option objects")
-(defvar *set-averages* nil "List of average timings for each set")
-(defvar *overall-average* 0 "Average `command' execution time")
+(in-package :comprof)
 
-;; debug
+;;
+;; Misc.
+;;
+(defun exit-with-error (message &optional (code 1))
+  (format *error-output* "~A~%Exiting...~%" message)
+  (uiop:quit code))
 
-(defmacro print-warning (message)
-  "Print ``Warning: \" followed by `message' to std. error"
-  `(format *error-output* "Warning: ~a~%" ,message))
 
-(defmacro print-err-and-exit (format-string &rest args)
-  "If `format-string' is non-nil, print ``Error:\" followed by the string
-formatted using `format-string' as the control-string and `args' as the args;
-finally, exit."
-  `(progn
-     (when ,format-string (format *error-output*
-				 "Error: ~a~%"
-				 (format nil ,format-string ,@args)))
-     (format *error-output* *usage*)
-     (exit :code 1)))
+;;
+;; Condition handling
+;;
+(define-condition shell-error (error) ()
+  (:documentation "Error for when the given command has a non-zero exit status"))
 
-;;; option parsing
+(defun ignore-shell-error (e)
+  (declare (ignore e))
+  (invoke-restart 'continue))
 
-(defclass option ()
-  ((flag  :initarg :flag :type string)
-   (value :initarg :value :accessor value)))
-(defclass string-option  (option) ((value :type string)))
-(defclass integer-option (option) ((value :type integer)))
-(defclass boolean-option (option) ((value :type boolean)))
+(defun do-not-ignore-shell-error (e)
+  (declare (ignore e))
+  (error 'shell-error))
 
-(defgeneric set-value (option value)
-  (:documentation "Set the value slot of an option object after
-converting `value' to the appropriate type"))
+(defun handle-vague-simple-error (e)
+  "UIOP:RUN-PROGRAM signals a SIMPLE-ERROR if the given command does not
+exist. It may very well signal the same sort of error for a host of
+other reasons, too. This function acts appropriately."
+  (declare (simple-error e))
+  (let ((error-text (format nil "~A" e)))
+    (cond ((string= (subseq error-text 9 16) "execute")
+           (exit-with-error error-text))
+          (t (exit-with-error (format nil "Unknown error: ~A" error-text))))))
 
-(defmethod set-value ((option integer-option) (value string))
-  (setf (value option) (parse-integer value)))
-(defmethod set-value ((option string-option) (value string))
-  (setf (value option) value))
-(defmethod set-value ((option boolean-option) (value (eql t)))
-  (setf (value option) t))
-(defmethod set-value ((option boolean-option) (value (eql nil)))
-  (setf (value option) nil))
 
-(define-condition premature-arglist-end-error (error) ())
-
-(defmacro make-options (&rest options)
-  "options::= (option*)
-option::= (option-class flag initial-value).
-`flag' is evaluated multiple times in the macro-expansion."
-  `(list ,@(mapcar (lambda (option)
-		     (destructuring-bind (class flag ival) option
-		       `(cons ,flag (make-instance ',class
-						   :flag  ,flag
-						   :value ,ival))))
-		   options)))
-
-(defmacro handle-option (flag &optional args)
-  "Set the option in `*options*' corresponding to `flag', popping items from
-`args' for option arguments as needed"
-  `(let* ((option (cdr (assoc ,flag *options*
-			      :test #'string=)))
-	  (value (if (eq (type-of option) 'boolean-option)
-		     t
-		     (pop ,args))))
-     (unless option (print-err-and-exit "Unrecognised option: ~s" ,flag))
-     (handler-case (set-value option value)
-       (parse-error ()
-	 (print-err-and-exit "Bad argument for option ~a: ~s" ,flag value)))))
-
-(defun process-argv ()
-  "Parse command-line arguments and assign options in `*options*'accordingly"
-  (loop for current-flag = (pop sb-ext:*posix-argv*)
-	when (not (handler-case (char= #\- (elt current-flag 0))
-		    (type-error () (error 'premature-arglist-end-error)))) ;;;; sohuld
-	  return (push current-flag sb-ext:*posix-argv*)
-	do (handle-option current-flag sb-ext:*posix-argv*)))
-
-(defun get-option-value (flag)
-  "Return the value of the option in `*options*' associated with `flag'."
-  (value (cdr (assoc flag *options* :test #'string=))))
-
-;;; program
-
-(defun command-run-time (command &key (output :interactive))
-  "Run program given in `command' as a list of a command name followed by
-arguments and return the time it takes to complete execution."
+;;
+;; Com profing
+;;
+(defun execution-duration (command)
+  "Return the number of internal time units it takes for the system to
+execute the command specified by `command'."
   (- (- (get-internal-real-time)
-	(progn (restart-case (uiop:run-program command :output output
-						       :force-shell nil)
-		 (use-time-anyways () nil))
+	(progn (uiop:run-program command)
 	       (get-internal-real-time)))))
 
-(defun comprof ()
-  "Run the command the number of times specified by the values
-associated with keys `\"-s\"' and `\"-t\"' in the variable `*options*'
-and print the average duration of such a run in microseconds."
-  (let ((sets  (get-option-value "-s"))
-	(times (get-option-value "-t"))
-	(ignore-errors (get-option-value "-e")))
-    (loop for set from 0 below sets
-	  for duration
-	    = (loop for time from 0 below times
-		    summing (handler-bind
-				((uiop:subprocess-error
-				   (lambda (c)
-				     (declare (ignore c))
-				     (if ignore-errors
-					 (invoke-restart 'use-time-anyways)
-					 (print-err-and-exit
-					  "~a failed on iteration ~d in set ~d"
-					  (car sb-ext:*posix-argv*)
-					  time
-					  set)))))
-			      (command-run-time sb-ext:*posix-argv*
-						:output nil)))
-	  ;;;;; the following `do'-forms should somehow be turned into
-	  ;;;;; accumulating `loop'-clauses
-	  do (push (/ duration times)
-		   *set-averages*)
-	     (incf *overall-average* duration)
-	  finally (setq *overall-average* (/ *overall-average*
-					     (* times sets))))
-    (format t "Average execution time: ~fms~%"
-	    (/ *overall-average* internal-time-units-per-second
-	       1000)) ;; from seconds to milliseconds
-    (format t "Total execution time:   ~fs~%"
-	    (/ (* *overall-average*
-		  (* times sets))
-	       internal-time-units-per-second))))
+(defun comprof (command &optional (times 20) (interval 0) (ignore-shell-error nil))
+  "Run `command' `times' times, waiting `interval' seconds between runs,
+then print the total duration of all executions alongside the average
+duration of each execution to stdout.
+
+If `ignore-shell-error' is non-nil comprof accumulates the times of
+executions which result in non-zero exit codes. Otherise comprof exits
+on such occasions."
+  (declare (integer times)
+           (list command))
+  (handler-bind ((uiop/run-program:subprocess-error
+                   (if ignore-shell-error
+                       #'ignore-shell-error
+                       #'do-not-ignore-shell-error))
+                 (simple-error #'handle-vague-simple-error))
+    (let* ((total (loop for time from 1 to times
+		        summing (execution-duration command)
+                        do (sleep interval)))
+	   (total-ms (/ total (/ internal-time-units-per-second 1000.0)))
+	   (average-ms (/ total-ms times)))
+      (format t "Executed ~d times:~@
+                 - Total execution time: ~dms~@
+                 - Avg. execution time:  ~dms~%"
+	      times
+	      total-ms
+	      average-ms))))
+
+
+;;;
+;;; CLI
+;;;
+(defparameter *option-interface*
+  (adopt:make-interface
+   :name    "comprof"
+   :summary "time shell commands/scripts"
+   :usage   "[-e] [-t TIMES] COMMAND"
+   :help    (format nil "Run COMMAND exactly TIMES times and report the average~
+                         duration of its execution")
+   :contents `(,(adopt:make-option
+		 'times
+		 :short     #\t
+		 :help      "number of times to run COMMAND"
+		 :parameter "TIMES"
+		 :reduce    (lambda (old new)
+			      (declare (ignore old))
+			      (parse-integer new))
+		 :initial-value 20)
+               ,(adopt:make-option
+                 'interval
+                 :short     #\s
+                 :help      "seconds to sleep between COMMAND executions"
+                 :parameter "INTERVAL"
+                 :reduce    (lambda (old new)
+                              (declare (ignore old))
+			      (with-input-from-string (stream new)
+                                (read stream)))
+                 :initial-value 0)
+	       ,(adopt:make-option
+		 'ignore-shell-error
+		 :short     #\e
+		 :help      "don't exit after encountering a non-zero return value"
+		 :reduce    (constantly t)
+		 :initial-value nil)
+               ,(adopt:make-option
+                 'help
+                 :short     #\h
+                 :long      "help"
+                 :help      "print help"
+                 :reduce    (constantly t)
+                 :initial-value nil))))
 
 (defun main ()
-  (setq *options* (make-options (integer-option "-s" 10)
-				(integer-option "-t" 100)
-				(boolean-option "-e" nil)
-				(boolean-option "-h" nil)))
-  (pop sb-ext:*posix-argv*) ; argv[0] is the invoked command, e.g. `sbcl'
-  (handler-case (process-argv)
-    (premature-arglist-end-error ()
-      (print-err-and-exit (unless (get-option-value "-h")
-			    "Command argument not found"))))
-  (when (string= (car sb-ext:*posix-argv*) "")
-    (print-err-and-exit "Empty string passed as command"))
-  (when (get-option-value "-h")
-    (print-err-and-exit nil))
-  (handler-case (comprof)
-    (sb-sys:interactive-interrupt () 1)
-    (end-of-file () 1)))
+  "Entrypoint for command-line-invocation of comprof."
+  (multiple-value-bind (shell-invocation options)
+      (adopt:parse-options-or-exit *option-interface* (rest (adopt:argv)) t)
+    (when (gethash 'help options)
+      (adopt:print-help-and-exit *option-interface* :option-width 12))
+    (when (null shell-invocation)
+      (exit-with-error "No command given."))
+    (handler-case (with-user-abort:with-user-abort
+		    (comprof shell-invocation
+                             (gethash 'times              options)
+                             (gethash 'interval           options)
+                             (gethash 'ignore-shell-error options)))
+      (with-user-abort:user-abort ()
+	(exit-with-error "Received user interrupt." 130))
+      (shell-error ()
+	(exit-with-error "Given command encountered an error and -e was not specified")))))
